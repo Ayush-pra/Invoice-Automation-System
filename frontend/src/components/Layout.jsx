@@ -20,19 +20,19 @@ const Layout = () => {
         <div className="sidebar-header">
           <div className="logo">
             <div className="logo-icon">
-              <HiOutlineDocumentText size={24} />
+              <HiOutlineDocumentText size={18} />
             </div>
-            <span className="logo-text">InvoiceHub</span>
+            <span className="logo-text">BillHub</span>
           </div>
         </div>
 
-        <nav className="sidebar-nav space-y-1">
+        <nav className="sidebar-nav">
           <NavLink
             to="/invoices"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             <HiOutlineDocumentText size={20} />
-            <span>Invoices</span>
+            <span>Billing Records</span>
           </NavLink>
           
           <NavLink

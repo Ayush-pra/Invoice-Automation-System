@@ -31,24 +31,14 @@ const billingDocumentSchema = new mongoose.Schema(
       enum: ['gmail', 'outlook', 'stripe', 'aws', 'openai', 'adobe', 'manual'],
       default: 'gmail',
     },
-    
-    // New source classification
+
+    // Simplified source classification (matches BillingRecord.recordType)
     documentSourceType: {
       type: String,
-      enum: [
-        'pdf_invoice',
-        'invoice_link',
-        'receipt_email',
-        'membership_confirmation',
-        'subscription_renewal',
-        'payment_confirmation',
-        'order_confirmation',
-        'utility_bill',
-        'unknown'
-      ],
-      default: 'unknown'
+      enum: ['pdf_invoice', 'invoice_link', 'billing_info_only'],
+      default: 'billing_info_only',
     },
-    
+
     // Raw email identifiers
     gmailMessageId: {
       type: String,
@@ -66,7 +56,7 @@ const billingDocumentSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    
+
     // Attachments (optional)
     attachmentId: {
       type: String,
@@ -84,7 +74,7 @@ const billingDocumentSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    
+
     // Hosted Links
     invoiceLink: { type: String, default: null },
     receiptLink: { type: String, default: null },
@@ -95,25 +85,13 @@ const billingDocumentSchema = new mongoose.Schema(
       enum: ['imported', 'processed', 'failed'],
       default: 'imported',
     },
-    confidenceScore: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-    confidenceBreakdown: {
-      domainMatch: { type: Number, default: 0 },
-      senderMatch: { type: Number, default: 0 },
-      subjectMatch: { type: Number, default: 0 },
-      keywordMatch: { type: Number, default: 0 },
-    },
   },
   {
     timestamps: true,
   }
 );
 
-// We still want to prevent duplicate imports of the same message/attachment
+// Prevent duplicate imports of the same message/attachment
 billingDocumentSchema.index(
   { userId: 1, gmailMessageId: 1, attachmentId: 1 },
   { unique: true, partialFilterExpression: { gmailMessageId: { $ne: null } } }

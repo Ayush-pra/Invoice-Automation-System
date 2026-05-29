@@ -1,205 +1,161 @@
 import BillingRecord from '../../models/BillingRecord.js';
 
+/**
+ * Deterministic Grouping / Deduplication Service
+ * 
+ * Rules:
+ * 1. Extract identifiers from document (invoiceNumber, orderNumber, transactionId, receiptNumber, paymentReference)
+ * 2. Search existing BillingRecords for SAME vendor + SAME identifier (any of the 5 fields)
+ * 3. If exact identifier match → Duplicate → Link to existing record
+ * 4. If no identifier match → Create new BillingRecord
+ * 
+ * CRITICAL: Same Vendor + Same Amount ≠ Duplicate (e.g., YouTube ₹79 monthly)
+ * ONLY: Same Vendor + Same Identifier = Duplicate (e.g., OpenAI OP-1001)
+ */
 class GroupingService {
   /**
-   * Group a newly fetched billing document into a BillingRecord.
-   * Modifies the document object with the resulting billingRecordId.
+   * Process a new billing document — either link to existing record or create new one.
+   * Mutates `document.billingRecordId` with the resulting record ID.
+   * 
+   * @param {Object} document - Document data (not yet saved to DB)
+   * @param {Object} vendor - { _id, name }
+   * @param {Object} extractedData - All extracted billing fields
    */
-  async processDocument(document, vendor) {
-    // 1. Extract Evidence
-    const evidence = this._extractEvidence(document, vendor);
-    
-    // 2. Find Candidate Records (same vendor, within +/- 15 days)
-    const candidates = await this._findCandidates(document, vendor);
-    
-    // 3. Match against candidates
-    let match = null;
-    let confidence = 'low';
+  async processDocument(document, vendor, extractedData) {
+    const {
+      amount,
+      currency,
+      recordType,
+      identifiers,
+      productName,
+      lineItems,
+      billingPeriod,
+      subscriptionName,
+      membershipName,
+      paymentMethod,
+      invoiceLink,
+      pdfUrl,
+    } = extractedData;
 
-    for (const candidate of candidates) {
-      const matchResult = this._evaluateMatch(document, evidence, candidate);
-      if (matchResult.confidence === 'high') {
-        match = candidate;
-        confidence = 'high';
-        break; // Stop looking if we have a high confidence match
+    // Step 1: Try to find an existing record with a matching identifier
+    const existingRecord = await this._findByIdentifier(document.userId, vendor._id, identifiers);
+
+    if (existingRecord) {
+      // DUPLICATE — link this document to the existing record
+      document.billingRecordId = existingRecord._id;
+
+      // Upgrade record type if this document provides better evidence
+      // Priority: invoice_pdf > invoice_link > billing_info_only
+      const typePriority = { invoice_pdf: 3, invoice_link: 2, billing_info_only: 1 };
+      if (typePriority[recordType] > typePriority[existingRecord.recordType]) {
+        existingRecord.recordType = recordType;
       }
+
+      // Fill in any missing fields from this new document
+      if (amount && !existingRecord.amount) existingRecord.amount = amount;
+      if (currency && !existingRecord.currency) existingRecord.currency = currency;
       
-      if (matchResult.confidence === 'medium' && !match) {
-        match = candidate;
-        confidence = 'medium';
+      // Merge Identifiers
+      const idKeys = ['invoiceNumber', 'orderNumber', 'transactionId', 'receiptNumber', 'paymentReference', 'customerTransactionId', 'merchantTransactionId', 'utr', 'rrn', 'paymentGatewayReference'];
+      for (const key of idKeys) {
+        if (identifiers[key] && !existingRecord[key]) existingRecord[key] = identifiers[key];
       }
-    }
 
-    let recordCompleteness = this._calculateCompleteness(document, evidence);
+      if (productName && !existingRecord.productName) existingRecord.productName = productName;
+      if (billingPeriod && !existingRecord.billingPeriod) existingRecord.billingPeriod = billingPeriod;
+      if (subscriptionName && !existingRecord.subscriptionName) existingRecord.subscriptionName = subscriptionName;
+      if (membershipName && !existingRecord.membershipName) existingRecord.membershipName = membershipName;
+      if (paymentMethod && !existingRecord.paymentMethod) existingRecord.paymentMethod = paymentMethod;
+      if (pdfUrl && !existingRecord.pdfUrl) existingRecord.pdfUrl = pdfUrl;
+      if (invoiceLink && !existingRecord.invoiceUrl) existingRecord.invoiceUrl = invoiceLink;
 
-    if (match) {
-      // We found a match! Merge it.
-      
-      if (confidence === 'high') {
-        // High confidence merges automatically
-        match.reviewStatus = 'auto_merged';
-      } else {
-        // Medium confidence merges but needs review
-        // Only override to needs_review if it wasn't already reviewed
-        if (match.reviewStatus !== 'reviewed') {
-          match.reviewStatus = 'needs_review';
+      // Merge Line Items (avoid duplicates by name)
+      if (lineItems && lineItems.length > 0) {
+        const existingNames = new Set(existingRecord.lineItems.map(item => item.name.toLowerCase()));
+        for (const item of lineItems) {
+          if (!existingNames.has(item.name.toLowerCase())) {
+            existingRecord.lineItems.push(item);
+            existingNames.add(item.name.toLowerCase());
+          }
         }
       }
-      
-      match.groupingConfidence = confidence;
-      
-      // Upgrade completeness score if this document provides better/new evidence
-      if (recordCompleteness > match.recordCompleteness) {
-        match.recordCompleteness = recordCompleteness;
+
+      // Track the email ID
+      if (document.gmailMessageId && !existingRecord.rawEmailIds.includes(document.gmailMessageId)) {
+        existingRecord.rawEmailIds.push(document.gmailMessageId);
       }
 
-      // Merge evidence if missing from candidate
-      if (evidence.invoiceNumber && !match.invoiceNumber) match.invoiceNumber = evidence.invoiceNumber;
-      if (evidence.orderNumber && !match.orderNumber) match.orderNumber = evidence.orderNumber;
-      if (evidence.transactionId && !match.transactionId) match.transactionId = evidence.transactionId;
-      if (evidence.paymentReference && !match.paymentReference) match.paymentReference = evidence.paymentReference;
-      
-      // Update amount/date if they were previously null
-      if (evidence.amount && !match.amount) match.amount = evidence.amount;
-      
-      await match.save();
-      document.billingRecordId = match._id;
-      
+      await existingRecord.save();
+      console.log(`  🔗 Linked to existing record (duplicate): ${vendor.name} — ID match`);
     } else {
-      // No match found, create a new BillingRecord (Low Confidence)
+      // NEW RECORD — create a fresh BillingRecord
       const newRecord = await BillingRecord.create({
         userId: document.userId,
         vendorId: vendor._id,
         vendorName: vendor.name,
+        productName: productName || null,
+        recordType,
+        amount: amount || null,
+        currency: currency || null,
         transactionDate: document.emailDate,
-        amount: evidence.amount || null,
-        currency: null,
-        groupingConfidence: 'low',
-        reviewStatus: 'separate',
-        invoiceNumber: evidence.invoiceNumber,
-        orderNumber: evidence.orderNumber,
-        transactionId: evidence.transactionId,
-        paymentReference: evidence.paymentReference,
-        recordCompleteness,
+        billingDate: document.emailDate, // Best guess; same as email date
+        billingPeriod: billingPeriod || null,
+        invoiceNumber: identifiers.invoiceNumber,
+        orderNumber: identifiers.orderNumber,
+        transactionId: identifiers.transactionId,
+        receiptNumber: identifiers.receiptNumber,
+        paymentReference: identifiers.paymentReference,
+        customerTransactionId: identifiers.customerTransactionId,
+        merchantTransactionId: identifiers.merchantTransactionId,
+        utr: identifiers.utr,
+        rrn: identifiers.rrn,
+        paymentGatewayReference: identifiers.paymentGatewayReference,
+        lineItems: lineItems || [],
+        subscriptionName: subscriptionName || null,
+        membershipName: membershipName || null,
+        paymentMethod: paymentMethod || null,
+        pdfUrl: pdfUrl || null,
+        invoiceUrl: invoiceLink || null,
+        emailSubject: document.emailSubject,
+        senderEmail: document.emailFrom,
+        rawEmailIds: document.gmailMessageId ? [document.gmailMessageId] : [],
       });
-      
+
       document.billingRecordId = newRecord._id;
     }
   }
 
-  _extractEvidence(document, vendor) {
-    const evidence = {
-      invoiceNumber: null,
-      orderNumber: null,
-      transactionId: null,
-      paymentReference: null,
-      amount: null
-    };
+  /**
+   * Find an existing BillingRecord that shares at least one identifier with the incoming data.
+   * Priority order: invoiceNumber → orderNumber → transactionId → receiptNumber → paymentReference
+   * 
+   * @param {ObjectId} userId
+   * @param {ObjectId} vendorId
+   * @param {Object} identifiers
+   * @returns {Document|null}
+   */
+  async _findByIdentifier(userId, vendorId, identifiers) {
+    // Build OR conditions for all non-null identifiers
+    const orConditions = [];
 
-    const textToSearch = `${document.emailSubject || ''} ${document.snippet || ''}`;
-
-    // Very basic regex parsing (can be enhanced over time)
-    // Looking for Order #, Invoice No., etc.
-    const orderMatch = textToSearch.match(/(?:Order|Order Number|Order #)[:#]?\s*([A-Z0-9-]+)/i);
-    if (orderMatch) evidence.orderNumber = orderMatch[1].trim();
-
-    const invoiceMatch = textToSearch.match(/(?:Invoice|Invoice No|Invoice Number)[:#]?\s*([A-Z0-9-]+)/i);
-    if (invoiceMatch) evidence.invoiceNumber = invoiceMatch[1].trim();
-
-    const txMatch = textToSearch.match(/(?:Transaction|Transaction ID)[:#]?\s*([A-Z0-9-]+)/i);
-    if (txMatch) evidence.transactionId = txMatch[1].trim();
-    
-    // Amount extraction ($12.99, Rs. 100, etc)
-    const amountMatch = textToSearch.match(/(?:USD|\$|₹|INR|Rs\.?)\s*([0-9,]+\.[0-9]{2})/i);
-    if (amountMatch) {
-      evidence.amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+    const idKeys = ['invoiceNumber', 'orderNumber', 'transactionId', 'receiptNumber', 'paymentReference', 'customerTransactionId', 'merchantTransactionId', 'utr', 'rrn', 'paymentGatewayReference'];
+    for (const key of idKeys) {
+      if (identifiers[key]) {
+        orConditions.push({ [key]: identifiers[key] });
+      }
     }
 
-    return evidence;
-  }
+    // No identifiers to match — this is always a new record
+    if (orConditions.length === 0) {
+      return null;
+    }
 
-  async _findCandidates(document, vendor) {
-    // Find records for this user & vendor within +/- 15 days of this email
-    const emailDate = document.emailDate || new Date();
-    const startDate = new Date(emailDate);
-    startDate.setDate(startDate.getDate() - 15);
-    
-    const endDate = new Date(emailDate);
-    endDate.setDate(endDate.getDate() + 15);
-
-    return await BillingRecord.find({
-      userId: document.userId,
-      vendorId: vendor._id,
-      transactionDate: {
-        $gte: startDate,
-        $lte: endDate
-      }
+    // Find by same vendor + any matching identifier
+    return await BillingRecord.findOne({
+      userId,
+      vendorId,
+      $or: orConditions,
     });
-  }
-
-  _evaluateMatch(document, evidence, candidate) {
-    // 1. High Confidence: Hard ID Match
-    if (evidence.invoiceNumber && candidate.invoiceNumber === evidence.invoiceNumber) return { confidence: 'high' };
-    if (evidence.orderNumber && candidate.orderNumber === evidence.orderNumber) return { confidence: 'high' };
-    if (evidence.transactionId && candidate.transactionId === evidence.transactionId) return { confidence: 'high' };
-    if (evidence.paymentReference && candidate.paymentReference === evidence.paymentReference) return { confidence: 'high' };
-
-    // 2. High Confidence: Exact amount on the same day (or adjacent day)
-    if (evidence.amount && candidate.amount === evidence.amount) {
-      const diffTime = Math.abs(document.emailDate - candidate.transactionDate);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-      if (diffDays <= 2) {
-        return { confidence: 'high' };
-      }
-    }
-
-    // 3. Medium Confidence: Matching Billing Period from Subject
-    const subject = document.emailSubject || '';
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    
-    for (const month of months) {
-      if (subject.includes(month)) {
-        // If the email subject contains the month, and the candidate date is in that month
-        if (candidate.transactionDate && candidate.transactionDate.getMonth() === months.indexOf(month)) {
-          return { confidence: 'medium' };
-        }
-      }
-    }
-
-    return { confidence: 'low' };
-  }
-
-  _calculateCompleteness(document, evidence) {
-    let score = 0;
-    
-    switch (document.documentSourceType) {
-      case 'pdf_invoice':
-        score = 100;
-        break;
-      case 'invoice_link':
-        score = 80;
-        break;
-      case 'receipt_email':
-        score = 70;
-        break;
-      case 'payment_confirmation':
-      case 'order_confirmation':
-        score = 60;
-        break;
-      case 'subscription_renewal':
-      case 'membership_confirmation':
-      case 'utility_bill':
-        score = 50;
-        break;
-      default:
-        score = 30; // Unknown but we have an email
-    }
-
-    // Boost score if we extracted hard evidence
-    if (evidence.amount) score += 10;
-    if (evidence.invoiceNumber || evidence.orderNumber || evidence.transactionId) score += 10;
-    
-    return Math.min(score, 100);
   }
 }
 

@@ -3,7 +3,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 
 /**
  * POST /api/invoices/sync
- * Triggers Gmail invoice sync for the authenticated user.
+ * Triggers Gmail billing record sync for the authenticated user.
  */
 export const syncInvoices = asyncHandler(async (req, res) => {
   const result = await invoiceService.syncInvoices(req.user._id);
@@ -17,8 +17,8 @@ export const syncInvoices = asyncHandler(async (req, res) => {
 
 /**
  * GET /api/invoices
- * Returns paginated list of invoices for the authenticated user.
- * Query params: page, limit, sortBy, order
+ * Returns paginated list of billing records for the authenticated user.
+ * Query params: page, limit, sortBy, order, vendorId, isRead
  */
 export const getInvoices = asyncHandler(async (req, res) => {
   const { page, limit, sortBy, order, vendorId, isRead } = req.query;
@@ -40,7 +40,7 @@ export const getInvoices = asyncHandler(async (req, res) => {
 
 /**
  * GET /api/invoices/:id
- * Returns a single invoice by ID for the authenticated user.
+ * Returns a single billing record by ID.
  */
 export const getInvoiceById = asyncHandler(async (req, res) => {
   const invoice = await invoiceService.getInvoiceById(
@@ -54,54 +54,43 @@ export const getInvoiceById = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * PATCH /api/invoices/:id/read
+ * Updates read status of a billing record.
+ */
 export const updateReadStatus = asyncHandler(async (req, res) => {
   const { isRead } = req.body;
   const invoice = await invoiceService.updateReadStatus(req.user._id, req.params.id, isRead);
-  
+
   res.json({
     success: true,
     data: invoice,
   });
 });
 
+/**
+ * DELETE /api/invoices/:id
+ * Deletes a single billing record and its documents.
+ */
 export const deleteInvoice = asyncHandler(async (req, res) => {
   await invoiceService.deleteInvoice(req.user._id, req.params.id);
-  
+
   res.json({
     success: true,
-    message: 'Invoice deleted successfully'
+    message: 'Billing record deleted successfully',
   });
 });
 
+/**
+ * POST /api/invoices/bulk-delete
+ * Bulk deletes billing records.
+ */
 export const bulkDeleteInvoices = asyncHandler(async (req, res) => {
   const { invoiceIds } = req.body;
   const result = await invoiceService.bulkDeleteInvoices(req.user._id, invoiceIds);
-  
-  res.json({
-    success: true,
-    message: `${result.deletedCount} invoices deleted successfully`
-  });
-});
 
-export const resolveGrouping = asyncHandler(async (req, res) => {
-  const { recordId } = req.params;
-  const { action } = req.body; // 'confirm' or 'separate'
-  
-  const record = await invoiceService.getInvoiceById(req.user._id, recordId);
-  
-  if (action === 'confirm') {
-    record.reviewStatus = 'reviewed';
-    record.groupingConfidence = 'manual';
-    await record.save();
-  } else if (action === 'separate') {
-    // Logic to separate documents into a new BillingRecord would go here
-    // For now, we'll just mark it as separated
-    record.reviewStatus = 'separate';
-    await record.save();
-  }
-  
   res.json({
     success: true,
-    data: record
+    message: `${result.deletedCount} billing records deleted successfully`,
   });
 });

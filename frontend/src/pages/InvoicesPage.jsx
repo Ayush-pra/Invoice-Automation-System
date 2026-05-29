@@ -15,24 +15,33 @@ import {
   HiOutlineDocumentText,
   HiOutlineTrash,
   HiOutlineMailOpen,
-  HiOutlineMail
+  HiOutlineMail,
+  HiOutlineExternalLink
 } from 'react-icons/hi';
 import DeleteModal from '../components/DeleteModal';
+import BillingDetailDrawer from '../components/BillingDetailDrawer';
 
 const API_BASE = 'http://localhost:3000/api';
+
+const RECORD_TYPE_CONFIG = {
+  invoice_pdf: { label: 'Invoice PDF', className: 'badge-pdf', icon: '📄' },
+  invoice_link: { label: 'Invoice Link', className: 'badge-link', icon: '🔗' },
+  billing_info_only: { label: 'Billing Info Only', className: 'badge-info', icon: '📋' },
+};
 
 const InvoicesPage = () => {
   const dispatch = useDispatch();
   const { integrations } = useSelector((state) => state.auth);
   const { invoices, loading, syncing, syncResult, error } = useSelector((state) => state.invoices);
-  const { data: config } = useSelector((state) => state.config);
 
   const isGmailConnected = integrations?.gmail?.connected;
 
   const [selectedIds, setSelectedIds] = useState([]);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(null); // null = bulk, ID = single
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [drawerRecord, setDrawerRecord] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     dispatch(fetchInvoices());
@@ -45,7 +54,7 @@ const InvoicesPage = () => {
     }
     
     await dispatch(syncInvoices());
-    dispatch(fetchInvoices()); // Refresh list
+    dispatch(fetchInvoices());
   };
 
   const toggleSelectAll = (e) => {
@@ -62,8 +71,25 @@ const InvoicesPage = () => {
     );
   };
 
-  const handleToggleRead = (id, currentStatus) => {
+  const handleToggleRead = (e, id, currentStatus) => {
+    e.stopPropagation();
     dispatch(toggleReadStatus({ id, isRead: !currentStatus }));
+  };
+
+  const openDrawer = (record) => {
+    setDrawerRecord(record);
+    setDrawerOpen(true);
+  };
+
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setTimeout(() => setDrawerRecord(null), 300);
+  };
+
+  const handleDrawerDelete = (id) => {
+    closeDrawer();
+    setDeleteTarget(id);
+    setDeleteModalOpen(true);
   };
 
   const confirmDelete = async () => {
@@ -80,16 +106,31 @@ const InvoicesPage = () => {
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return '-';
+    if (!dateString) return '—';
     return new Intl.DateTimeFormat('en-US', {
       year: 'numeric', month: 'short', day: 'numeric',
     }).format(new Date(dateString));
   };
 
-  const getConfidenceBadge = (score) => {
-    if (score >= 80) return <span className="badge bg-green-100 text-green-800">{score}% Match</span>;
-    if (score >= 60) return <span className="badge bg-yellow-100 text-yellow-800">{score}% Match</span>;
-    return <span className="badge bg-red-100 text-red-800">{score}% Match</span>;
+  const formatAmount = (amount, currency) => {
+    if (!amount) return '—';
+    const symbol = currency === 'INR' ? '₹' : currency === 'USD' ? '$' : '';
+    return (
+      <span className="amount-display">
+        <span className="amount-currency">{symbol}</span>
+        {amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </span>
+    );
+  };
+
+  // Get primary identifier for display
+  const getPrimaryId = (record) => {
+    if (record.invoiceNumber) return { label: 'INV', value: record.invoiceNumber };
+    if (record.orderNumber) return { label: 'ORD', value: record.orderNumber };
+    if (record.transactionId) return { label: 'TXN', value: record.transactionId };
+    if (record.receiptNumber) return { label: 'RCT', value: record.receiptNumber };
+    if (record.paymentReference) return { label: 'REF', value: record.paymentReference };
+    return null;
   };
 
   return (
@@ -97,7 +138,7 @@ const InvoicesPage = () => {
       <div className="page-header">
         <div>
           <h1 className="page-title">Billing Records</h1>
-          <p className="page-subtitle">Manage your transactions and invoices.</p>
+          <p className="page-subtitle">Your collected billing events from email.</p>
         </div>
 
         <div className="header-actions">
@@ -111,63 +152,57 @@ const InvoicesPage = () => {
               onClick={handleSync}
               disabled={syncing}
             >
-              <HiOutlineRefresh className={`icon ${syncing ? 'spin' : ''}`} size={20} />
-              <span>{syncing ? 'Syncing...' : 'Sync Invoices'}</span>
+              <HiOutlineRefresh className={`icon ${syncing ? 'spin' : ''}`} size={18} />
+              <span>{syncing ? 'Syncing...' : 'Sync Now'}</span>
             </button>
           )}
         </div>
       </div>
 
+      {/* Sync Result Panel */}
       {syncResult && (
-        <div className="bg-white rounded-lg shadow-sm border border-green-200 p-6 mb-6">
-          <div className="flex items-center text-green-700 mb-4">
-            <HiOutlineCheckCircle size={24} className="mr-2" />
-            <h4 className="text-lg font-semibold">Sync Complete</h4>
+        <div className="sync-panel">
+          <div className="sync-panel-header">
+            <HiOutlineCheckCircle size={22} />
+            <h4>Sync Complete</h4>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="p-3 bg-gray-50 rounded text-center">
-              <span className="block text-2xl font-bold text-gray-800">{syncResult.imported}</span>
-              <span className="text-sm text-gray-500">Imported</span>
+          <div className="sync-stats">
+            <div className="sync-stat">
+              <span className="sync-stat-value">{syncResult.imported}</span>
+              <span className="sync-stat-label">Imported</span>
             </div>
-            <div className="p-3 bg-gray-50 rounded text-center">
-              <span className="block text-2xl font-bold text-gray-800">{syncResult.skipped}</span>
-              <span className="text-sm text-gray-500">Skipped (Dupes)</span>
+            <div className="sync-stat">
+              <span className="sync-stat-value">{syncResult.skipped}</span>
+              <span className="sync-stat-label">Skipped</span>
             </div>
-            <div className="p-3 bg-gray-50 rounded text-center">
-              <span className="block text-2xl font-bold text-gray-800">{syncResult.errors}</span>
-              <span className="text-sm text-gray-500">Errors</span>
+            <div className="sync-stat">
+              <span className="sync-stat-value">{syncResult.errors}</span>
+              <span className="sync-stat-label">Errors</span>
             </div>
           </div>
           
-          {syncResult.vendorStats && (
+          {syncResult.vendorStats && syncResult.vendorStats.length > 0 && (
             <div>
-              <h5 className="font-semibold text-gray-700 mb-2">Vendor Details:</h5>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <h5 className="text-sm font-semibold text-gray-600 mb-3">Vendor Breakdown</h5>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 {syncResult.vendorStats.map(stat => (
-                  <div key={stat.vendor} className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
-                    <div className="flex justify-between items-center mb-3">
-                      <span className="font-bold text-gray-800">{stat.vendor}</span>
-                      <span className="text-sm font-medium bg-green-100 text-green-800 px-2 py-1 rounded">
+                  <div key={stat.vendor} className="bg-gray-50 border border-gray-200 p-3 rounded-lg">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="font-bold text-gray-800 text-sm">{stat.vendor}</span>
+                      <span className="text-xs font-medium bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
                         {stat.invoicesImported} Qualified
                       </span>
                     </div>
-                    <div className="text-sm text-gray-600 mb-2">
-                      <span className="font-medium">Emails Scanned:</span> {stat.emailsFound}
+                    <div className="text-xs text-gray-500">
+                      Scanned: {stat.emailsFound} · Rejected: {stat.ignored}
                     </div>
-                    {stat.ignored > 0 && (
-                      <div className="text-sm">
-                        <span className="font-medium text-red-600 mb-1 block">Rejected ({stat.ignored}):</span>
-                        {stat.rejectionReasons && Object.keys(stat.rejectionReasons).length > 0 ? (
-                          <ul className="list-disc pl-5 space-y-1 text-gray-600">
-                            {Object.entries(stat.rejectionReasons).map(([reason, count]) => (
-                              <li key={reason}>
-                                <span className="font-medium">{count}x</span> {reason}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <span className="text-gray-500 italic">No specific reasons logged</span>
-                        )}
+                    {stat.ignored > 0 && Object.keys(stat.rejectionReasons || {}).length > 0 && (
+                      <div className="mt-2 text-xs text-gray-500">
+                        {Object.entries(stat.rejectionReasons).slice(0, 3).map(([reason, count]) => (
+                          <div key={reason} className="truncate">
+                            <span className="font-medium">{count}×</span> {reason}
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -177,7 +212,7 @@ const InvoicesPage = () => {
           )}
           
           <button 
-            className="text-sm text-gray-500 hover:text-gray-700 underline mt-4 block"
+            className="text-xs text-gray-400 hover:text-gray-600 mt-4 block"
             onClick={() => dispatch(clearSyncResult())}
           >
             Dismiss
@@ -185,9 +220,10 @@ const InvoicesPage = () => {
         </div>
       )}
       
+      {/* Error Toast */}
       {error && (
         <div className="toast toast-error mb-6">
-          <HiOutlineExclamationCircle size={24} />
+          <HiOutlineExclamationCircle size={22} />
           <div>
             <h4>Error</h4>
             <p>{error}</p>
@@ -195,34 +231,36 @@ const InvoicesPage = () => {
         </div>
       )}
 
+      {/* Bulk Actions */}
       {selectedIds.length > 0 && (
-        <div className="bg-primary-50 border border-primary-200 rounded-lg p-3 mb-6 flex items-center justify-between">
-          <span className="text-primary-800 font-medium">{selectedIds.length} invoices selected</span>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center justify-between">
+          <span className="text-blue-800 font-medium text-sm">{selectedIds.length} records selected</span>
           <button 
-            className="btn btn-sm bg-red-100 text-red-700 hover:bg-red-200 border-none"
+            className="btn btn-sm bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
             onClick={() => { setDeleteTarget(null); setDeleteModalOpen(true); }}
           >
-            <HiOutlineTrash size={16} className="mr-1" /> Delete Selected
+            <HiOutlineTrash size={14} /> Delete Selected
           </button>
         </div>
       )}
 
-      <div className="card table-card">
+      {/* Main Table */}
+      <div className="card">
         {loading && invoices.length === 0 ? (
-          <div className="table-loading py-12">
+          <div className="table-loading">
             <div className="loading-spinner" />
-            <p>Loading invoices...</p>
+            <p>Loading billing records...</p>
           </div>
         ) : invoices.length === 0 ? (
-          <div className="empty-state py-16">
+          <div className="empty-state">
             <div className="empty-state-icon">
-              <HiOutlineDocumentText size={48} />
+              <HiOutlineDocumentText size={52} />
             </div>
-            <h3>No invoices found</h3>
-            <p className="max-w-md text-center mx-auto text-gray-500">
+            <h3>No billing records yet</h3>
+            <p>
               {isGmailConnected 
-                ? "Click 'Sync Invoices' to scan your Gmail for invoices based on your selected vendors."
-                : "Connect your Gmail account to start collecting invoices automatically."}
+                ? "Click 'Sync Now' to scan your Gmail for billing events from your selected vendors."
+                : "Connect your Gmail account to start collecting billing records automatically."}
             </p>
           </div>
         ) : (
@@ -230,7 +268,7 @@ const InvoicesPage = () => {
             <table className="data-table w-full">
               <thead>
                 <tr>
-                  <th className="w-12 text-center">
+                  <th className="w-10 text-center">
                     <input 
                       type="checkbox" 
                       className="rounded border-gray-300"
@@ -238,34 +276,26 @@ const InvoicesPage = () => {
                       onChange={toggleSelectAll}
                     />
                   </th>
-                  <th>Status</th>
+                  <th className="w-10"></th>
                   <th>Vendor</th>
+                  <th>Amount</th>
                   <th>Date</th>
-                  <th>Source / Completeness</th>
+                  <th>Type</th>
                   <th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {invoices.map((record) => {
-                  const hasPdf = record.documents?.some(d => d.pdfUrl);
-                  const pdfDoc = record.documents?.find(d => d.pdfUrl);
-                  const linkDoc = record.documents?.find(d => d.invoiceLink || d.receiptLink || d.billingPortalLink);
-                  const docLink = linkDoc ? (linkDoc.invoiceLink || linkDoc.receiptLink || linkDoc.billingPortalLink) : null;
-                  
-                  let badge = null;
-                  if (record.recordCompleteness === 100 || hasPdf) {
-                    badge = <span className="badge bg-green-100 text-green-800">PDF Available</span>;
-                  } else if (record.recordCompleteness >= 80 || docLink) {
-                    badge = <span className="badge bg-blue-100 text-blue-800">Invoice Link Available</span>;
-                  } else if (record.recordCompleteness >= 50) {
-                    badge = <span className="badge bg-yellow-100 text-yellow-800">Email Receipt Only</span>;
-                  } else {
-                    badge = <span className="badge bg-gray-100 text-gray-800">Unknown</span>;
-                  }
+                  const typeConfig = RECORD_TYPE_CONFIG[record.recordType] || RECORD_TYPE_CONFIG.billing_info_only;
+                  const primaryId = getPrimaryId(record);
 
                   return (
-                  <tr key={record._id} className={!record.isRead ? 'bg-gray-50/50' : ''}>
-                    <td className="text-center">
+                  <tr 
+                    key={record._id} 
+                    className={`cursor-pointer ${!record.isRead ? 'unread' : ''}`}
+                    onClick={() => openDrawer(record)}
+                  >
+                    <td className="text-center" onClick={(e) => e.stopPropagation()}>
                       <input 
                         type="checkbox" 
                         className="rounded border-gray-300"
@@ -273,83 +303,98 @@ const InvoicesPage = () => {
                         onChange={() => toggleSelect(record._id)}
                       />
                     </td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => handleToggleRead(record._id, record.isRead)}
-                        className="text-gray-400 hover:text-primary-600 transition-colors"
+                        onClick={(e) => handleToggleRead(e, record._id, record.isRead)}
+                        className="text-gray-400 hover:text-blue-600 transition-colors"
                         title={record.isRead ? "Mark as unread" : "Mark as read"}
                       >
-                        {record.isRead ? <HiOutlineMailOpen size={20} /> : <HiOutlineMail size={20} className="text-primary-600" />}
+                        {record.isRead 
+                          ? <HiOutlineMailOpen size={18} /> 
+                          : <HiOutlineMail size={18} className="text-blue-600" />
+                        }
                       </button>
                     </td>
                     <td>
                       <div className="vendor-cell">
                         <div className="vendor-avatar">
-                          {record.vendorName?.charAt(0)?.toUpperCase() || '?'}
+                          {(record.productName || record.vendorName)?.charAt(0)?.toUpperCase() || '?'}
                         </div>
                         <div>
-                          <span className={`block font-medium ${!record.isRead ? 'text-gray-900' : 'text-gray-700'} flex items-center`}>
-                            {record.vendorName}
-                            {record.reviewStatus === 'needs_review' && (
-                              <span className="ml-2 text-xs font-semibold text-orange-600 bg-orange-100 px-2 py-0.5 rounded-full">Needs Review</span>
-                            )}
+                          <span className={`block font-medium ${!record.isRead ? 'text-gray-900' : 'text-gray-700'}`}>
+                            {record.productName || record.vendorName}
                           </span>
-                          <span className="text-xs text-gray-500 truncate max-w-[200px] block">
-                            {record.documents && record.documents.length > 0 ? record.documents[0].emailSubject : 'No email subject'}
+                          <span className="text-xs text-gray-400 truncate max-w-[220px] block">
+                            {record.productName ? `${record.vendorName} · ` : ''}{record.emailSubject || 'No subject'}
                           </span>
-                          {record.amount && (
-                            <span className="text-xs font-medium text-gray-700 block mt-0.5">
-                              {record.currency || '$'}{record.amount}
+                          {primaryId && (
+                            <span className="identifier-tag mt-0.5">
+                              <span className="label">{primaryId.label}:</span> {primaryId.value}
                             </span>
                           )}
                         </div>
                       </div>
                     </td>
-                    <td>{formatDate(record.transactionDate || record.createdAt)}</td>
                     <td>
-                      <div className="flex flex-col items-start gap-1">
-                        {badge}
-                        {record.documents && record.documents.length > 1 && (
-                          <span className="text-xs text-gray-500">Grouped ({record.documents.length} docs)</span>
+                      {formatAmount(record.amount, record.currency)}
+                    </td>
+                    <td className="text-gray-600 text-sm">
+                      {formatDate(record.transactionDate || record.createdAt)}
+                    </td>
+                    <td>
+                      <span className={`badge ${typeConfig.className}`}>
+                        {typeConfig.label}
+                      </span>
+                    </td>
+                    <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1">
+                        {record.pdfUrl && (
+                          <a 
+                            href={record.pdfUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="btn btn-sm btn-outline text-xs"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            PDF
+                          </a>
                         )}
+                        {!record.pdfUrl && record.invoiceUrl && (
+                          <a 
+                            href={record.invoiceUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="btn btn-sm btn-outline text-xs text-blue-600 border-blue-200 hover:bg-blue-50"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <HiOutlineExternalLink size={12} /> Link
+                          </a>
+                        )}
+                        <button 
+                          className="btn btn-sm text-red-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100"
+                          onClick={(e) => { e.stopPropagation(); setDeleteTarget(record._id); setDeleteModalOpen(true); }}
+                        >
+                          <HiOutlineTrash size={14} />
+                        </button>
                       </div>
                     </td>
-                    <td className="text-right space-x-2">
-                      {hasPdf && (
-                        <a 
-                          href={pdfDoc.pdfUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="btn btn-sm btn-outline text-xs"
-                        >
-                          View PDF
-                        </a>
-                      )}
-                      {!hasPdf && docLink && (
-                        <a 
-                          href={docLink} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="btn btn-sm btn-outline text-xs text-blue-600 border-blue-200 hover:bg-blue-50"
-                        >
-                          Open Link
-                        </a>
-                      )}
-                      <button 
-                        className="btn btn-sm text-red-500 hover:bg-red-50 border border-transparent hover:border-red-100"
-                        onClick={() => { setDeleteTarget(record._id); setDeleteModalOpen(true); }}
-                      >
-                        <HiOutlineTrash size={16} />
-                      </button>
-                    </td>
                   </tr>
-                )})}
+                );})}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
+      {/* Detail Drawer */}
+      <BillingDetailDrawer 
+        record={drawerRecord}
+        isOpen={drawerOpen}
+        onClose={closeDrawer}
+        onDelete={handleDrawerDelete}
+      />
+
+      {/* Delete Modal */}
       <DeleteModal 
         isOpen={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}

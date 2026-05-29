@@ -18,46 +18,107 @@ const billingRecordSchema = new mongoose.Schema(
       default: 'Unknown',
       trim: true,
     },
-    transactionDate: {
-      type: Date,
+    productName: {
+      type: String,
       default: null,
+      trim: true,
     },
+
+    // --- Record Type (Evidence Quality Tag) ---
+    recordType: {
+      type: String,
+      enum: ['invoice_pdf', 'invoice_link', 'billing_info_only'],
+      default: 'billing_info_only',
+    },
+
+    // --- Financial Data ---
     amount: {
       type: Number,
       default: null,
     },
     currency: {
       type: String,
+      enum: ['INR', 'USD', null],
       default: null,
       uppercase: true,
     },
-    
-    // Grouping & Confidence
-    groupingConfidence: {
-      type: String,
-      enum: ['high', 'medium', 'low', 'manual'],
-      default: 'low',
-    },
-    reviewStatus: {
-      type: String,
-      enum: ['auto_merged', 'needs_review', 'reviewed', 'separate'],
-      default: 'separate',
-    },
-    
-    // Evidence (Identifiers used for grouping)
+
+    // --- Unique Identifiers (for deduplication) ---
     invoiceNumber: { type: String, default: null },
     orderNumber: { type: String, default: null },
     transactionId: { type: String, default: null },
+    receiptNumber: { type: String, default: null },
     paymentReference: { type: String, default: null },
-    
-    // Completeness Score (0-100)
-    recordCompleteness: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
+    customerTransactionId: { type: String, default: null },
+    merchantTransactionId: { type: String, default: null },
+    utr: { type: String, default: null },
+    rrn: { type: String, default: null },
+    paymentGatewayReference: { type: String, default: null },
+
+    // --- Line Items ---
+    lineItems: [
+      {
+        name: { type: String, required: true },
+        amount: { type: Number, required: true },
+      }
+    ],
+
+    // --- Dates ---
+    transactionDate: {
+      type: Date,
+      default: null,
     },
-    
+    billingDate: {
+      type: Date,
+      default: null,
+    },
+    billingPeriod: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    // --- Subscription / Membership ---
+    subscriptionName: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    membershipName: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    paymentMethod: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    // --- Denormalized Quick-Access Fields ---
+    pdfUrl: {
+      type: String,
+      default: null,
+    },
+    invoiceUrl: {
+      type: String,
+      default: null,
+    },
+    emailSubject: {
+      type: String,
+      default: null,
+    },
+    senderEmail: {
+      type: String,
+      default: null,
+    },
+
+    // --- Email Tracking ---
+    rawEmailIds: {
+      type: [String],
+      default: [],
+    },
+
     isRead: {
       type: Boolean,
       default: false,
@@ -78,6 +139,9 @@ billingRecordSchema.virtual('documents', {
 // Ensure virtuals are included when converting to JSON/Object
 billingRecordSchema.set('toObject', { virtuals: true });
 billingRecordSchema.set('toJSON', { virtuals: true });
+
+// Index for deduplication queries
+billingRecordSchema.index({ userId: 1, vendorId: 1 });
 
 const BillingRecord = mongoose.model('BillingRecord', billingRecordSchema);
 export default BillingRecord;

@@ -20,12 +20,6 @@ const userVendorConfigSchema = new mongoose.Schema(
       min: 7,
       max: 365,
     },
-    confidenceThreshold: {
-      type: Number,
-      default: 60,
-      min: 0,
-      max: 100,
-    },
     lastSyncAt: {
       type: Date,
       default: null,

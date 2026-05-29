@@ -9,7 +9,6 @@ export const getConfig = asyncHandler(async (req, res) => {
       userId: req.user._id,
       selectedVendors: [],
       scanDurationDays: 90,
-      confidenceThreshold: 60
     });
   }
 
@@ -20,12 +19,11 @@ export const getConfig = asyncHandler(async (req, res) => {
 });
 
 export const updateConfig = asyncHandler(async (req, res) => {
-  const { selectedVendors, scanDurationDays, confidenceThreshold } = req.body;
+  const { selectedVendors, scanDurationDays } = req.body;
   
   const updateData = {};
   if (selectedVendors) updateData.selectedVendors = selectedVendors;
   if (scanDurationDays) updateData.scanDurationDays = scanDurationDays;
-  if (confidenceThreshold !== undefined) updateData.confidenceThreshold = confidenceThreshold;
 
   const config = await UserVendorConfig.findOneAndUpdate(
     { userId: req.user._id },

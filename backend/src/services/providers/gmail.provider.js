@@ -1,11 +1,13 @@
 import { google } from 'googleapis';
 import config from '../../config/index.js';
 import BaseInvoiceProvider from './base.provider.js';
-import { decrypt } from '../../utils/encryption.js';
 import qualificationService from '../invoice/qualification.service.js';
 
 /**
- * Gmail invoice provider (Vendor-First Architecture)
+ * Gmail Billing Provider (Deterministic Billing Collection)
+ * 
+ * Scans Gmail for billing emails from selected vendors.
+ * Uses deterministic qualification: Amount (mandatory) + Positive Billing Indicator.
  */
 class GmailProvider extends BaseInvoiceProvider {
   constructor() {
@@ -49,14 +51,13 @@ class GmailProvider extends BaseInvoiceProvider {
   }
 
   /**
-   * Fetch invoices based on specific vendors.
+   * Fetch billing records based on specific vendors.
    */
   async fetchInvoices(integration, options = {}) {
-    const { 
-      vendors = [], 
+    const {
+      vendors = [],
       existingMessageIds = new Set(),
       scanDurationDays = 90,
-      confidenceThreshold = 60
     } = options;
 
     if (!this.gmail) {
@@ -65,6 +66,9 @@ class GmailProvider extends BaseInvoiceProvider {
 
     const allInvoices = [];
     const debugStats = [];
+    
+    // Track message IDs processed in this run to avoid processing the same email for multiple vendors
+    const processedInThisRun = new Set();
 
     for (const vendor of vendors) {
       const vendorStats = {
@@ -73,16 +77,15 @@ class GmailProvider extends BaseInvoiceProvider {
         emailsFound: 0,
         invoicesImported: 0,
         ignored: 0,
-        rejectionReasons: {}, // e.g. { 'Security Alert': 5, 'No evidence': 2 }
-        confidenceScores: []
+        rejectionReasons: {},
       };
 
       if (!vendor.domains || vendor.domains.length === 0) {
         debugStats.push(vendorStats);
-        continue; // Cannot search without domain
+        continue;
       }
 
-      // Generate query for this vendor (Removed PDF requirement)
+      // Generate query for this vendor
       const domainQuery = vendor.domains.map(d => `from:(${d})`).join(' OR ');
       const query = `newer_than:${scanDurationDays}d (${domainQuery})`;
 
@@ -92,18 +95,18 @@ class GmailProvider extends BaseInvoiceProvider {
       vendorStats.emailsFound = messageIds.length;
 
       for (const messageId of messageIds) {
-        if (existingMessageIds.has(messageId)) {
+        if (existingMessageIds.has(messageId) || processedInThisRun.has(messageId)) {
           vendorStats.ignored++;
           continue;
         }
 
         try {
-          const processResult = await this._processMessage(messageId, vendor, confidenceThreshold);
-          
+          const processResult = await this._processMessage(messageId, vendor);
+
           if (processResult.qualified) {
             allInvoices.push(processResult.invoiceData);
             vendorStats.invoicesImported++;
-            vendorStats.confidenceScores.push(processResult.invoiceData.confidenceScore);
+            processedInThisRun.add(messageId);
           } else {
             vendorStats.ignored++;
             const reason = processResult.reason || 'Unknown';
@@ -133,7 +136,7 @@ class GmailProvider extends BaseInvoiceProvider {
 
     return {
       invoices: allInvoices,
-      stats: debugStats
+      stats: debugStats,
     };
   }
 
@@ -159,7 +162,7 @@ class GmailProvider extends BaseInvoiceProvider {
     return messageIds;
   }
 
-  async _processMessage(messageId, vendor, threshold) {
+  async _processMessage(messageId, vendor) {
     const response = await this.gmail.users.messages.get({
       userId: 'me',
       id: messageId,
@@ -174,18 +177,17 @@ class GmailProvider extends BaseInvoiceProvider {
 
     // Find PDF attachments
     const pdfAttachments = this._findPdfAttachments(message.payload);
-    
-    // Extract Body for link parsing
-    const bodyText = this._extractBody(message.payload);
-    const invoiceLink = this._extractLink(bodyText, /(?:href=|"|')(https?:\/\/[^\s"'<>]+?(?:invoice|receipt|billing)[^\s"'<>]*)(?:"|'|>)/i);
 
-    // Call Qualification Engine
+    // Extract body for link parsing and data extraction
+    const bodyText = this._extractBody(message.payload);
+    const invoiceLink = this._extractInvoiceLink(bodyText);
+
+    // --- Deterministic Qualification ---
     const qualification = qualificationService.qualifyEmail(
-      vendor, 
-      emailSubject, 
-      message.snippet, 
-      bodyText, 
-      pdfAttachments.length > 0, 
+      emailSubject,
+      message.snippet,
+      bodyText,
+      pdfAttachments.length > 0,
       !!invoiceLink
     );
 
@@ -193,9 +195,13 @@ class GmailProvider extends BaseInvoiceProvider {
       return { qualified: false, reason: qualification.reason };
     }
 
-    if (qualification.score < threshold) {
-      return { qualified: false, reason: `Rejected: Confidence too low (${qualification.score} < ${threshold})` };
-    }
+    // --- Extract All Billing Fields ---
+    const identifiers = qualificationService.extractIdentifiers(emailSubject, message.snippet, bodyText);
+    const billingPeriod = qualificationService.extractBillingPeriod(emailSubject, message.snippet);
+    const { subscriptionName, membershipName } = qualificationService.extractSubscriptionInfo(emailSubject, message.snippet);
+    const paymentMethod = qualificationService.extractPaymentMethod(bodyText);
+    const productName = qualificationService.extractProductName(emailSubject, message.snippet, bodyText);
+    const lineItems = qualificationService.extractLineItems(bodyText);
 
     // Download PDFs
     const attachments = [];
@@ -221,9 +227,6 @@ class GmailProvider extends BaseInvoiceProvider {
       }
     }
 
-    // (bodyText and invoiceLink were already extracted above for qualification)
-    const documentSourceType = this._classifySourceType(emailSubject, message.snippet, pdfAttachments.length > 0);
-
     return {
       qualified: true,
       invoiceData: {
@@ -235,11 +238,19 @@ class GmailProvider extends BaseInvoiceProvider {
         emailDate,
         snippet: message.snippet,
         attachments,
-        documentSourceType,
+        // Extracted data
+        recordType: qualification.recordType,
+        amount: qualification.amount,
+        currency: qualification.currency,
+        identifiers,
+        productName,
+        lineItems,
+        billingPeriod,
+        subscriptionName,
+        membershipName,
+        paymentMethod,
         invoiceLink,
-        confidenceScore: qualification.score,
-        confidenceBreakdown: {} // Left empty as we migrated to Qualification Engine
-      }
+      },
     };
   }
 
@@ -256,26 +267,13 @@ class GmailProvider extends BaseInvoiceProvider {
     return body;
   }
 
-  _extractLink(bodyText, regex) {
-    const match = bodyText.match(regex);
+  _extractInvoiceLink(bodyText) {
+    // Look for invoice/receipt/billing links
+    const match = bodyText.match(
+      /(?:href=|"|')(https?:\/\/[^\s"'<>]+?(?:invoice|receipt|billing|download)[^\s"'<>]*)(?:"|'|>)/i
+    );
     return match ? match[1] : null;
   }
-
-  _classifySourceType(subject, snippet, hasPdf) {
-    const text = `${subject} ${snippet}`.toLowerCase();
-    
-    if (hasPdf) return 'pdf_invoice';
-    if (text.includes('membership') || text.includes('welcome to')) return 'membership_confirmation';
-    if (text.includes('renewal')) return 'subscription_renewal';
-    if (text.includes('receipt') || text.includes('payment successful')) return 'receipt_email';
-    if (text.includes('order confirmation') || text.includes('your order')) return 'order_confirmation';
-    if (text.includes('payment confirmation')) return 'payment_confirmation';
-    if (text.includes('bill') && (text.includes('utility') || text.includes('electricity') || text.includes('broadband'))) return 'utility_bill';
-    
-    return 'unknown';
-  }
-
-
 
   _parseHeaders(headers) {
     const result = {};
