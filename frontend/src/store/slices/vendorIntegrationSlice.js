@@ -80,7 +80,7 @@ const vendorIntegrationSlice = createSlice({
         state.loadingRegistry = false;
         console.error("Registry fetch failed", action.payload);
       })
-      
+
       // Integrations
       .addCase(fetchVendorIntegrations.pending, (state) => {
         state.loadingIntegrations = true;
@@ -92,7 +92,7 @@ const vendorIntegrationSlice = createSlice({
       .addCase(fetchVendorIntegrations.rejected, (state, action) => {
         state.loadingIntegrations = false;
       })
-      
+
       // Validate
       .addCase(validateVendorCredentials.pending, (state) => {
         state.validating = true;
@@ -102,7 +102,7 @@ const vendorIntegrationSlice = createSlice({
       .addCase(validateVendorCredentials.fulfilled, (state, action) => {
         state.validating = false;
         state.validationResult = { success: true, message: action.payload.message };
-        
+
         // Update local integrations list
         const updatedIntegration = action.payload.data;
         const index = state.integrations.findIndex(i => i.vendorName === updatedIntegration.vendorName);
