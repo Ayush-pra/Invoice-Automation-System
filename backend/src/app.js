@@ -5,6 +5,8 @@ import config from './config/index.js';
 import { errorHandler, notFoundHandler } from './middlewares/errorHandler.js';
 import authRoutes from './routes/auth.routes.js';
 import invoiceRoutes from './routes/invoice.routes.js';
+import vendorRoutes from './routes/vendor.routes.js';
+import configRoutes from './routes/config.routes.js';
 
 const app = express();
 
@@ -25,9 +27,12 @@ app.get('/api/health', (req, res) => {
 // --------------- Routes ---------------
 app.use('/api/auth', authRoutes);
 app.use('/api/invoices', invoiceRoutes);
+app.use('/api/vendors', vendorRoutes);
+app.use('/api/config', configRoutes);
 
 // --------------- Error Handling ---------------
 app.use(notFoundHandler);
 app.use(errorHandler);
 
 export default app;
+

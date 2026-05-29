@@ -1,7 +1,7 @@
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { logout } from '../store/slices/authSlice';
-import { HiOutlineLogout, HiOutlineMail, HiOutlineDocumentText } from 'react-icons/hi';
+import { HiOutlineLogout, HiOutlineDocumentText, HiOutlineCog } from 'react-icons/hi';
 
 const Layout = () => {
   const { user } = useSelector((state) => state.auth);
@@ -26,18 +26,22 @@ const Layout = () => {
           </div>
         </div>
 
-        <nav className="sidebar-nav">
-          <a
-            href="/invoices"
-            className="nav-item active"
-            onClick={(e) => {
-              e.preventDefault();
-              navigate('/invoices');
-            }}
+        <nav className="sidebar-nav space-y-1">
+          <NavLink
+            to="/invoices"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             <HiOutlineDocumentText size={20} />
             <span>Invoices</span>
-          </a>
+          </NavLink>
+          
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+          >
+            <HiOutlineCog size={20} />
+            <span>Settings</span>
+          </NavLink>
         </nav>
 
         <div className="sidebar-footer">

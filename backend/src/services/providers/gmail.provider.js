@@ -2,32 +2,18 @@ import { google } from 'googleapis';
 import config from '../../config/index.js';
 import BaseInvoiceProvider from './base.provider.js';
 import { decrypt } from '../../utils/encryption.js';
+import qualificationService from '../invoice/qualification.service.js';
 
 /**
- * Gmail invoice provider.
- * Searches Gmail for invoice-related emails with PDF attachments.
+ * Gmail invoice provider (Vendor-First Architecture)
  */
 class GmailProvider extends BaseInvoiceProvider {
   constructor() {
     super();
     this.gmail = null;
     this.oauth2Client = null;
-
-    // Keywords that indicate an invoice-related email
-    this.invoiceKeywords = [
-      'invoice',
-      'receipt',
-      'billing',
-      'payment',
-      'subscription',
-      'statement',
-      'order confirmation',
-    ];
   }
 
-  /**
-   * Create an authenticated Gmail client from integration tokens.
-   */
   async connect(integration) {
     this.oauth2Client = new google.auth.OAuth2(
       config.google.clientId,
@@ -35,7 +21,6 @@ class GmailProvider extends BaseInvoiceProvider {
       config.google.redirectUri
     );
 
-    // Get decrypted tokens
     const integrationObj = integration.toObject({ getters: true });
 
     this.oauth2Client.setCredentials({
@@ -46,7 +31,6 @@ class GmailProvider extends BaseInvoiceProvider {
         : null,
     });
 
-    // Handle automatic token refresh
     this.oauth2Client.on('tokens', async (tokens) => {
       console.log('🔄 Gmail tokens refreshed');
       if (tokens.access_token) {
@@ -65,57 +49,94 @@ class GmailProvider extends BaseInvoiceProvider {
   }
 
   /**
-   * Fetch invoice emails with PDF attachments from Gmail.
-   * @returns {Array<Object>} Array of invoice data objects.
+   * Fetch invoices based on specific vendors.
    */
   async fetchInvoices(integration, options = {}) {
-    const { existingMessageIds = new Set() } = options;
+    const { 
+      vendors = [], 
+      existingMessageIds = new Set(),
+      scanDurationDays = 90,
+      confidenceThreshold = 60
+    } = options;
 
     if (!this.gmail) {
       await this.connect(integration);
     }
 
-    // Build Gmail search query
-    const keywordQuery = this.invoiceKeywords
-      .map((k) => `"${k}"`)
-      .join(' OR ');
-    const query = `has:attachment filename:pdf newer_than:90d (${keywordQuery})`;
+    const allInvoices = [];
+    const debugStats = [];
 
-    console.log(`📧 Searching Gmail with query: ${query}`);
+    for (const vendor of vendors) {
+      const vendorStats = {
+        vendor: vendor.name,
+        vendorId: vendor._id.toString(),
+        emailsFound: 0,
+        invoicesImported: 0,
+        ignored: 0,
+        rejectionReasons: {}, // e.g. { 'Security Alert': 5, 'No evidence': 2 }
+        confidenceScores: []
+      };
 
-    // Fetch message IDs matching query
-    const messageIds = await this._listMessages(query);
-    console.log(`📧 Found ${messageIds.length} matching messages`);
-
-    const invoiceResults = [];
-
-    for (const messageId of messageIds) {
-      // Skip if already imported
-      if (existingMessageIds.has(messageId)) {
-        continue;
+      if (!vendor.domains || vendor.domains.length === 0) {
+        debugStats.push(vendorStats);
+        continue; // Cannot search without domain
       }
 
-      try {
-        const invoiceData = await this._processMessage(messageId);
-        if (invoiceData) {
-          invoiceResults.push(invoiceData);
+      // Generate query for this vendor (Removed PDF requirement)
+      const domainQuery = vendor.domains.map(d => `from:(${d})`).join(' OR ');
+      const query = `newer_than:${scanDurationDays}d (${domainQuery})`;
+
+      console.log(`📧 Searching Gmail for [${vendor.name}]: ${query}`);
+
+      const messageIds = await this._listMessages(query);
+      vendorStats.emailsFound = messageIds.length;
+
+      for (const messageId of messageIds) {
+        if (existingMessageIds.has(messageId)) {
+          vendorStats.ignored++;
+          continue;
         }
-      } catch (error) {
-        console.error(
-          `⚠️  Failed to process message ${messageId}:`,
-          error.message
-        );
-        // Continue processing other messages
+
+        try {
+          const processResult = await this._processMessage(messageId, vendor, confidenceThreshold);
+          
+          if (processResult.qualified) {
+            allInvoices.push(processResult.invoiceData);
+            vendorStats.invoicesImported++;
+            vendorStats.confidenceScores.push(processResult.invoiceData.confidenceScore);
+          } else {
+            vendorStats.ignored++;
+            const reason = processResult.reason || 'Unknown';
+            vendorStats.rejectionReasons[reason] = (vendorStats.rejectionReasons[reason] || 0) + 1;
+          }
+        } catch (error) {
+          console.error(`⚠️ Failed to process message ${messageId}:`, error.message);
+          vendorStats.ignored++;
+          vendorStats.rejectionReasons['Error: ' + error.message] = (vendorStats.rejectionReasons['Error: ' + error.message] || 0) + 1;
+        }
       }
+
+      // Print debug stats for this vendor
+      console.log(`\n📊 Vendor: ${vendor.name}`);
+      console.log(`Emails Scanned: ${vendorStats.emailsFound}`);
+      console.log(`Rejected: ${vendorStats.ignored}`);
+      if (Object.keys(vendorStats.rejectionReasons).length > 0) {
+        console.log(`Reasons:`);
+        for (const [reason, count] of Object.entries(vendorStats.rejectionReasons)) {
+          console.log(`  - ${reason} (${count})`);
+        }
+      }
+      console.log(`Qualified: ${vendorStats.invoicesImported}\n`);
+
+      debugStats.push(vendorStats);
     }
 
-    return invoiceResults;
+    return {
+      invoices: allInvoices,
+      stats: debugStats
+    };
   }
 
-  /**
-   * List all message IDs matching the search query.
-   * Handles pagination automatically.
-   */
   async _listMessages(query) {
     const messageIds = [];
     let pageToken = null;
@@ -138,11 +159,7 @@ class GmailProvider extends BaseInvoiceProvider {
     return messageIds;
   }
 
-  /**
-   * Process a single Gmail message.
-   * Extracts metadata and PDF attachments.
-   */
-  async _processMessage(messageId) {
+  async _processMessage(messageId, vendor, threshold) {
     const response = await this.gmail.users.messages.get({
       userId: 'me',
       id: messageId,
@@ -151,17 +168,36 @@ class GmailProvider extends BaseInvoiceProvider {
 
     const message = response.data;
     const headers = this._parseHeaders(message.payload.headers);
-    const vendorName = this._extractVendorName(headers.from);
+    const emailSubject = headers.subject || '';
+    const emailFrom = headers.from || '';
     const emailDate = headers.date ? new Date(headers.date) : new Date();
 
     // Find PDF attachments
     const pdfAttachments = this._findPdfAttachments(message.payload);
+    
+    // Extract Body for link parsing
+    const bodyText = this._extractBody(message.payload);
+    const invoiceLink = this._extractLink(bodyText, /(?:href=|"|')(https?:\/\/[^\s"'<>]+?(?:invoice|receipt|billing)[^\s"'<>]*)(?:"|'|>)/i);
 
-    if (pdfAttachments.length === 0) {
-      return null;
+    // Call Qualification Engine
+    const qualification = qualificationService.qualifyEmail(
+      vendor, 
+      emailSubject, 
+      message.snippet, 
+      bodyText, 
+      pdfAttachments.length > 0, 
+      !!invoiceLink
+    );
+
+    if (!qualification.qualified) {
+      return { qualified: false, reason: qualification.reason };
     }
 
-    // Download each PDF attachment
+    if (qualification.score < threshold) {
+      return { qualified: false, reason: `Rejected: Confidence too low (${qualification.score} < ${threshold})` };
+    }
+
+    // Download PDFs
     const attachments = [];
     for (const attachment of pdfAttachments) {
       try {
@@ -171,7 +207,6 @@ class GmailProvider extends BaseInvoiceProvider {
           id: attachment.attachmentId,
         });
 
-        // Gmail returns base64url-encoded data
         const buffer = Buffer.from(attachmentData.data.data, 'base64');
 
         attachments.push({
@@ -182,30 +217,66 @@ class GmailProvider extends BaseInvoiceProvider {
           size: attachment.size,
         });
       } catch (error) {
-        console.error(
-          `⚠️  Failed to download attachment ${attachment.fileName}:`,
-          error.message
-        );
+        console.error(`⚠️ Failed to download attachment ${attachment.fileName}:`, error.message);
       }
     }
 
-    if (attachments.length === 0) {
-      return null;
-    }
+    // (bodyText and invoiceLink were already extracted above for qualification)
+    const documentSourceType = this._classifySourceType(emailSubject, message.snippet, pdfAttachments.length > 0);
 
     return {
-      messageId,
-      vendorName,
-      emailSubject: headers.subject || 'No Subject',
-      emailFrom: headers.from || 'Unknown',
-      emailDate,
-      attachments,
+      qualified: true,
+      invoiceData: {
+        messageId,
+        vendorId: vendor._id,
+        vendorName: vendor.name,
+        emailSubject,
+        emailFrom,
+        emailDate,
+        snippet: message.snippet,
+        attachments,
+        documentSourceType,
+        invoiceLink,
+        confidenceScore: qualification.score,
+        confidenceBreakdown: {} // Left empty as we migrated to Qualification Engine
+      }
     };
   }
 
-  /**
-   * Parse email headers into a key-value object.
-   */
+  _extractBody(payload) {
+    let body = '';
+    if (payload.body && payload.body.data) {
+      body += Buffer.from(payload.body.data, 'base64').toString('utf-8');
+    }
+    if (payload.parts) {
+      for (const part of payload.parts) {
+        body += this._extractBody(part);
+      }
+    }
+    return body;
+  }
+
+  _extractLink(bodyText, regex) {
+    const match = bodyText.match(regex);
+    return match ? match[1] : null;
+  }
+
+  _classifySourceType(subject, snippet, hasPdf) {
+    const text = `${subject} ${snippet}`.toLowerCase();
+    
+    if (hasPdf) return 'pdf_invoice';
+    if (text.includes('membership') || text.includes('welcome to')) return 'membership_confirmation';
+    if (text.includes('renewal')) return 'subscription_renewal';
+    if (text.includes('receipt') || text.includes('payment successful')) return 'receipt_email';
+    if (text.includes('order confirmation') || text.includes('your order')) return 'order_confirmation';
+    if (text.includes('payment confirmation')) return 'payment_confirmation';
+    if (text.includes('bill') && (text.includes('utility') || text.includes('electricity') || text.includes('broadband'))) return 'utility_bill';
+    
+    return 'unknown';
+  }
+
+
+
   _parseHeaders(headers) {
     const result = {};
     const targetHeaders = ['from', 'to', 'subject', 'date'];
@@ -220,35 +291,6 @@ class GmailProvider extends BaseInvoiceProvider {
     return result;
   }
 
-  /**
-   * Extract vendor name from email sender.
-   * Example: "OpenAI <billing@openai.com>" → "OpenAI"
-   * Example: "billing@openai.com" → "OpenAI"
-   */
-  _extractVendorName(from) {
-    if (!from) return 'Unknown';
-
-    // Try to extract display name: "Display Name <email>"
-    const displayNameMatch = from.match(/^"?([^"<]+)"?\s*</);
-    if (displayNameMatch) {
-      return displayNameMatch[1].trim();
-    }
-
-    // Fall back to domain name from email
-    const emailMatch = from.match(/@([^.>]+)/);
-    if (emailMatch) {
-      // Capitalize first letter
-      const domain = emailMatch[1];
-      return domain.charAt(0).toUpperCase() + domain.slice(1);
-    }
-
-    return from.trim();
-  }
-
-  /**
-   * Recursively find PDF attachments in message payload.
-   * Handles multipart messages.
-   */
   _findPdfAttachments(payload, results = []) {
     if (payload.mimeType === 'application/pdf' && payload.body?.attachmentId) {
       results.push({
@@ -259,7 +301,6 @@ class GmailProvider extends BaseInvoiceProvider {
       });
     }
 
-    // Recursively check parts (for multipart messages)
     if (payload.parts) {
       for (const part of payload.parts) {
         this._findPdfAttachments(part, results);

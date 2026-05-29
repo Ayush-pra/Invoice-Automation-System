@@ -9,6 +9,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
 import InvoicesPage from './pages/InvoicesPage';
+import SettingsPage from './pages/SettingsPage';
 
 function App() {
   const dispatch = useDispatch();
@@ -35,6 +36,7 @@ function App() {
         {/* Protected Routes inside Layout */}
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="/" element={<Navigate to="/invoices" replace />} />
         </Route>
         

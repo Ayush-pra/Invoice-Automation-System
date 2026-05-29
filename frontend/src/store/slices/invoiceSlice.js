@@ -27,6 +27,42 @@ export const syncInvoices = createAsyncThunk(
   }
 );
 
+export const toggleReadStatus = createAsyncThunk(
+  'invoices/toggleReadStatus',
+  async ({ id, isRead }, { rejectWithValue }) => {
+    try {
+      const response = await api.patch(`/invoices/${id}/read`, { isRead });
+      return response.data.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to update read status');
+    }
+  }
+);
+
+export const deleteInvoice = createAsyncThunk(
+  'invoices/deleteInvoice',
+  async (id, { rejectWithValue }) => {
+    try {
+      await api.delete(`/invoices/${id}`);
+      return id;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to delete invoice');
+    }
+  }
+);
+
+export const bulkDeleteInvoices = createAsyncThunk(
+  'invoices/bulkDeleteInvoices',
+  async (invoiceIds, { rejectWithValue }) => {
+    try {
+      await api.post('/invoices/bulk-delete', { invoiceIds });
+      return invoiceIds;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to bulk delete invoices');
+    }
+  }
+);
+
 const invoiceSlice = createSlice({
   name: 'invoices',
   initialState: {
@@ -74,6 +110,24 @@ const invoiceSlice = createSlice({
       .addCase(syncInvoices.rejected, (state, action) => {
         state.syncing = false;
         state.error = action.payload;
+      })
+      // toggleReadStatus
+      .addCase(toggleReadStatus.fulfilled, (state, action) => {
+        const updatedInvoice = action.payload;
+        const index = state.invoices.findIndex(inv => inv._id === updatedInvoice._id);
+        if (index !== -1) {
+          state.invoices[index] = updatedInvoice;
+        }
+      })
+      // deleteInvoice
+      .addCase(deleteInvoice.fulfilled, (state, action) => {
+        const deletedId = action.payload;
+        state.invoices = state.invoices.filter(inv => inv._id !== deletedId);
+      })
+      // bulkDeleteInvoices
+      .addCase(bulkDeleteInvoices.fulfilled, (state, action) => {
+        const deletedIds = action.payload;
+        state.invoices = state.invoices.filter(inv => !deletedIds.includes(inv._id));
       });
   },
 });
