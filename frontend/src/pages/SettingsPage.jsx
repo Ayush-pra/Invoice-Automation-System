@@ -2,22 +2,31 @@ import { useEffect, useState, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { fetchVendorCatalog } from '../store/slices/vendorSlice';
 import { fetchConfig, updateConfig, clearConfigError } from '../store/slices/configSlice';
-import { HiOutlineSearch, HiOutlineCheckCircle, HiOutlineSave } from 'react-icons/hi';
+import { fetchVendorRegistry, fetchVendorIntegrations } from '../store/slices/vendorIntegrationSlice';
+import { HiOutlineSearch, HiOutlineCheckCircle, HiOutlineSave, HiOutlineKey } from 'react-icons/hi';
+import VendorCredentialModal from '../components/VendorCredentialModal';
 
 const SettingsPage = () => {
   const dispatch = useDispatch();
   
   const { catalog, loading: vendorsLoading } = useSelector((state) => state.vendors);
   const { data: config, loading: configLoading, saving, error } = useSelector((state) => state.config);
+  const { registry, integrations, loadingRegistry } = useSelector((state) => state.vendorIntegration);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedVendors, setSelectedVendors] = useState([]);
   const [scanDurationDays, setScanDurationDays] = useState(90);
   const [successMessage, setSuccessMessage] = useState('');
+  
+  // Modal State
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedVendorForModal, setSelectedVendorForModal] = useState(null);
 
   useEffect(() => {
     dispatch(fetchVendorCatalog());
     dispatch(fetchConfig());
+    dispatch(fetchVendorRegistry());
+    dispatch(fetchVendorIntegrations());
   }, [dispatch]);
 
   // Load config into local state
@@ -28,12 +37,30 @@ const SettingsPage = () => {
     }
   }, [config]);
 
-  const handleToggleVendor = (vendorId) => {
-    setSelectedVendors(prev => 
-      prev.includes(vendorId) 
-        ? prev.filter(id => id !== vendorId)
-        : [...prev, vendorId]
-    );
+  const handleToggleVendor = (vendor) => {
+    const isSelected = selectedVendors.includes(vendor._id);
+    
+    if (isSelected) {
+      setSelectedVendors(prev => prev.filter(id => id !== vendor._id));
+    } else {
+      setSelectedVendors(prev => [...prev, vendor._id]);
+      
+      // Prompt for credentials immediately if API is supported and not already connected
+      const caps = registry[vendor.name];
+      if (caps && caps.supportsApi && caps.credentials) {
+        const isConnected = integrations.some(i => i.vendorName === vendor.name && i.status === 'connected');
+        if (!isConnected) {
+          setSelectedVendorForModal(vendor.name);
+          setModalOpen(true);
+        }
+      }
+    }
+  };
+
+  const handleOpenModal = (e, vendorName) => {
+    e.stopPropagation();
+    setSelectedVendorForModal(vendorName);
+    setModalOpen(true);
   };
 
   const handleSave = async () => {
@@ -151,6 +178,10 @@ const SettingsPage = () => {
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                         {vendors.map(vendor => {
                           const isSelected = selectedVendors.includes(vendor._id);
+                          const caps = registry[vendor.name];
+                          const integration = integrations.find(i => i.vendorName === vendor.name);
+                          const isConnected = integration?.status === 'connected';
+
                           return (
                             <div 
                               key={vendor._id}
@@ -159,14 +190,32 @@ const SettingsPage = () => {
                                   ? 'bg-blue-50 border-blue-400 shadow-sm' 
                                   : 'bg-white border-gray-200 hover:border-gray-300'
                               }`}
-                              onClick={() => handleToggleVendor(vendor._id)}
+                              onClick={() => handleToggleVendor(vendor)}
                             >
-                              <div className="flex items-center justify-between">
+                              <div className="flex items-center justify-between mb-1">
                                 <span className={`font-medium text-sm ${isSelected ? 'text-blue-700' : 'text-gray-700'}`}>
                                   {vendor.name}
                                 </span>
                                 {isSelected && <HiOutlineCheckCircle className="text-blue-600" size={18} />}
                               </div>
+                              
+                              {/* Connection Status indicator if API supported */}
+                              {caps?.supportsApi && caps?.credentials && (
+                                <div className="mt-2 text-xs flex justify-between items-center border-t border-gray-200 pt-1">
+                                  {isConnected ? (
+                                    <span className="text-green-600 font-medium">Connected</span>
+                                  ) : (
+                                    <span className="text-orange-500 font-medium">Needs Setup</span>
+                                  )}
+                                  <button 
+                                    className="text-gray-500 hover:text-blue-600"
+                                    onClick={(e) => handleOpenModal(e, vendor.name)}
+                                    title="Configure API Credentials"
+                                  >
+                                    <HiOutlineKey size={14} />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -224,6 +273,12 @@ const SettingsPage = () => {
         </div>
 
       </div>
+      
+      <VendorCredentialModal 
+        vendorName={selectedVendorForModal}
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+      />
     </div>
   );
 };

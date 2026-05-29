@@ -11,6 +11,13 @@ export class AppError extends Error {
 }
 
 /**
+ * Wrapper for async route handlers to catch exceptions and pass them to Express error handler.
+ */
+export const catchAsync = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+/**
  * 404 handler for unmatched routes.
  */
 export const notFoundHandler = (req, res, next) => {

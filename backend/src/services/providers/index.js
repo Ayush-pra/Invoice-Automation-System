@@ -1,4 +1,8 @@
 import GmailProvider from './gmail.provider.js';
+import OpenAIProvider from './api/openai.provider.js';
+import AWSProvider from './api/aws.provider.js';
+import CloudflareProvider from './api/cloudflare.provider.js';
+import RazorpayProvider from './api/razorpay.provider.js';
 
 /**
  * Provider registry.
@@ -7,10 +11,10 @@ import GmailProvider from './gmail.provider.js';
  */
 const providers = {
   gmail: GmailProvider,
-  // Future providers:
-  // outlook: OutlookProvider,
-  // stripe: StripeProvider,
-  // aws: AwsProvider,
+  OpenAI: OpenAIProvider,
+  AWS: AWSProvider,
+  Cloudflare: CloudflareProvider,
+  Razorpay: RazorpayProvider,
 };
 
 /**
