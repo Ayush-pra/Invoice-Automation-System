@@ -159,66 +159,7 @@ const InvoicesPage = () => {
         </div>
       </div>
 
-      {/* Sync Result Panel */}
-      {syncResult && (
-        <div className="sync-panel">
-          <div className="sync-panel-header">
-            <HiOutlineCheckCircle size={22} />
-            <h4>Sync Complete</h4>
-          </div>
-          <div className="sync-stats">
-            <div className="sync-stat">
-              <span className="sync-stat-value">{syncResult.imported}</span>
-              <span className="sync-stat-label">Imported</span>
-            </div>
-            <div className="sync-stat">
-              <span className="sync-stat-value">{syncResult.skipped}</span>
-              <span className="sync-stat-label">Skipped</span>
-            </div>
-            <div className="sync-stat">
-              <span className="sync-stat-value">{syncResult.errors}</span>
-              <span className="sync-stat-label">Errors</span>
-            </div>
-          </div>
-          
-          {syncResult.vendorStats && syncResult.vendorStats.length > 0 && (
-            <div>
-              <h5 className="text-sm font-semibold text-gray-600 mb-3">Vendor Breakdown</h5>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {syncResult.vendorStats.map(stat => (
-                  <div key={stat.vendor} className="bg-gray-50 border border-gray-200 p-3 rounded-lg">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="font-bold text-gray-800 text-sm">{stat.vendor}</span>
-                      <span className="text-xs font-medium bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                        {stat.invoicesImported} Qualified
-                      </span>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      Scanned: {stat.emailsFound} · Rejected: {stat.ignored}
-                    </div>
-                    {stat.ignored > 0 && Object.keys(stat.rejectionReasons || {}).length > 0 && (
-                      <div className="mt-2 text-xs text-gray-500">
-                        {Object.entries(stat.rejectionReasons).slice(0, 3).map(([reason, count]) => (
-                          <div key={reason} className="truncate">
-                            <span className="font-medium">{count}×</span> {reason}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          
-          <button 
-            className="text-xs text-gray-400 hover:text-gray-600 mt-4 block"
-            onClick={() => dispatch(clearSyncResult())}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
+      {/* Sync Result Panel Removed */}
       
       {/* Error Toast */}
       {error && (
