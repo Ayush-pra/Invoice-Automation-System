@@ -1,0 +1,144 @@
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+enum Role {
+    SUPER_ADMIN
+    COMPANY_ADMIN
+    FINANCE
+    EMPLOYEE
+}
+
+enum BillingType {
+    METERED
+    FIXED
+    ANNUAL
+    SUBSCRIPTION_ONLY
+}
+
+enum IntegrationMethod {
+    API
+    EMAIL
+    BROWSER
+    MANUAL
+}
+
+enum InvoiceStatus {
+    PENDING
+    PROCESSED
+    SENT
+}
+
+model Company {
+    id            String         @id @default(uuid())
+    name          String
+    email         String         @unique
+    createdAt     DateTime       @default(now())
+    users         User[]
+    departments   Department[]
+    invoices      Invoice[]
+    subscriptions Subscription[]
+    reports       Report[]
+    budgets       Budget[]
+}
+
+model Department {
+    id        String  @id @default(uuid())
+    name      String
+    companyId String
+    company   Company @relation(fields: [companyId], references: [id])
+    users     User[]
+    budgets   Budget[]
+}
+
+model User {
+    id            String         @id @default(uuid())
+    name          String
+    email         String         @unique
+    password      String
+    role          Role           @default(EMPLOYEE)
+    companyId     String
+    company       Company        @relation(fields: [companyId], references: [id])
+    departmentId  String?
+    department    Department?    @relation(fields: [departmentId], references: [id])
+    subscriptions Subscription[]
+    emailToken    EmailToken?
+    createdAt     DateTime       @default(now())
+}
+
+model Subscription {
+    id          String            @id @default(uuid())
+    platform    String // "openai", "github", "figma"
+    method      IntegrationMethod
+    billingType BillingType
+    credentials String // encrypted
+    isActive    Boolean           @default(true)
+    userId      String
+    user        User              @relation(fields: [userId], references: [id])
+    companyId   String
+    company     Company           @relation(fields: [companyId], references: [id])
+    invoices    Invoice[]
+    createdAt   DateTime          @default(now())
+}
+
+model Invoice {
+    id             String        @id @default(uuid())
+    externalId     String? // platform's own invoice ID — duplicate check
+    platform       String
+    amount         Float
+    currency       String        @default("USD")
+    billingDate    DateTime
+    pdfUrl         String? // S3 URL
+    rawData        Json? // store full extracted data
+    status         InvoiceStatus @default(PENDING)
+    subscriptionId String
+    subscription   Subscription  @relation(fields: [subscriptionId], references: [id])
+    companyId      String
+    company        Company       @relation(fields: [companyId], references: [id])
+    createdAt      DateTime      @default(now())
+}
+
+model EmailToken {
+    id           String   @id @default(uuid())
+    userId       String   @unique
+    user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    accessToken  String   // encrypted
+    refreshToken String   // encrypted
+    expiresAt    DateTime
+    createdAt    DateTime @default(now())
+}
+
+model Report {
+    id          String   @id @default(uuid())
+    companyId   String
+    company     Company  @relation(fields: [companyId], references: [id])
+    month       Int
+    year        Int
+    totalAmount Float
+    currency    String   @default("INR")
+    summary     Json
+    pdfUrl      String?
+    emailSentTo String?
+    emailSentAt DateTime?
+    status      String   @default("generated")
+    createdAt   DateTime @default(now())
+}
+
+model Budget {
+    id           String     @id @default(uuid())
+    companyId    String
+    company      Company    @relation(fields: [companyId], references: [id])
+    departmentId String
+    department   Department @relation(fields: [departmentId], references: [id])
+    month        Int
+    year         Int
+    amount       Float
+    currency     String     @default("INR")
+    createdAt    DateTime   @default(now())
+
+    @@unique([departmentId, month, year])
+}
