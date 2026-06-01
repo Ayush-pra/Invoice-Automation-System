@@ -42,6 +42,8 @@ const InvoicesPage = () => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [drawerRecord, setDrawerRecord] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncSummary, setSyncSummary] = useState(null);
 
   useEffect(() => {
     dispatch(fetchInvoices());
@@ -53,8 +55,29 @@ const InvoicesPage = () => {
       return;
     }
     
-    await dispatch(syncInvoices());
-    dispatch(fetchInvoices());
+    setSyncSummary(null);
+    setSyncStatus('Scanning emails...');
+    
+    // Simulate UI progress for UX
+    const checkTimer = setTimeout(() => setSyncStatus('Checking existing records...'), 2000);
+    const importTimer = setTimeout(() => setSyncStatus('Importing new bills...'), 4500);
+
+    const resultAction = await dispatch(syncInvoices());
+    
+    clearTimeout(checkTimer);
+    clearTimeout(importTimer);
+
+    if (syncInvoices.fulfilled.match(resultAction)) {
+      setSyncStatus('Sync completed.');
+      setSyncSummary(resultAction.payload);
+      dispatch(fetchInvoices());
+      
+      setTimeout(() => {
+        setSyncStatus(null);
+      }, 2000);
+    } else {
+      setSyncStatus(null);
+    }
   };
 
   const toggleSelectAll = (e) => {
@@ -159,7 +182,40 @@ const InvoicesPage = () => {
         </div>
       </div>
 
-      {/* Sync Result Panel Removed */}
+      {/* Sync Progress & Summary */}
+      {syncStatus && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4 flex items-center justify-between shadow-sm animate-pulse">
+          <div className="flex items-center gap-3">
+            <HiOutlineRefresh className="icon spin text-blue-600" size={24} />
+            <span className="text-blue-800 font-medium">{syncStatus}</span>
+          </div>
+        </div>
+      )}
+
+      {syncSummary && !syncStatus && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3">
+            <HiOutlineCheckCircle className="text-green-600" size={24} />
+            <div>
+              <h4 className="text-green-800 font-semibold mb-1">Sync Completed</h4>
+              <p className="text-green-700 text-sm">
+                {syncSummary.imported} new bills imported. {syncSummary.skipped} duplicate bills were skipped.
+              </p>
+              {syncSummary.errors > 0 && (
+                <p className="text-red-600 text-sm mt-1">
+                  Failed extractions: {syncSummary.errors}
+                </p>
+              )}
+            </div>
+          </div>
+          <button 
+            className="text-gray-400 hover:text-gray-600"
+            onClick={() => setSyncSummary(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
       
       {/* Error Toast */}
       {error && (

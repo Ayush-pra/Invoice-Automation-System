@@ -37,8 +37,8 @@ class GroupingService {
       pdfUrl,
     } = extractedData;
 
-    // Step 1: Try to find an existing record with a matching identifier
-    const existingRecord = await this._findByIdentifier(document.userId, vendor._id, identifiers);
+    // Step 1: Try to find an existing record with a matching identifier or amount+date
+    const existingRecord = await this._findByIdentifier(document.userId, vendor._id, identifiers, amount, document.emailDate);
 
     if (existingRecord) {
       // DUPLICATE — link this document to the existing record
@@ -87,6 +87,7 @@ class GroupingService {
 
       await existingRecord.save();
       console.log(`  🔗 Linked to existing record (duplicate): ${vendor.name} — ID match`);
+      return { isDuplicate: true, recordId: existingRecord._id };
     } else {
       // NEW RECORD — create a fresh BillingRecord
       const newRecord = await BillingRecord.create({
@@ -122,6 +123,7 @@ class GroupingService {
       });
 
       document.billingRecordId = newRecord._id;
+      return { isDuplicate: false, recordId: newRecord._id };
     }
   }
 
@@ -134,7 +136,7 @@ class GroupingService {
    * @param {Object} identifiers
    * @returns {Document|null}
    */
-  async _findByIdentifier(userId, vendorId, identifiers) {
+  async _findByIdentifier(userId, vendorId, identifiers, amount, emailDate) {
     // Build OR conditions for all non-null identifiers
     const orConditions = [];
 
@@ -145,17 +147,46 @@ class GroupingService {
       }
     }
 
-    // No identifiers to match — this is always a new record
-    if (orConditions.length === 0) {
-      return null;
+    if (orConditions.length > 0) {
+      // Find by same vendor + any matching identifier
+      const record = await BillingRecord.findOne({
+        userId,
+        vendorId,
+        $or: orConditions,
+      });
+      if (record) return record;
     }
 
-    // Find by same vendor + any matching identifier
-    return await BillingRecord.findOne({
-      userId,
-      vendorId,
-      $or: orConditions,
-    });
+    // Fallback: Date + Amount Proximity (Solves missing identifiers for things like Airtel)
+    // If no explicit identifiers matched, check if we have a record with the exact same amount
+    // around the same date (e.g., within 7 days). This prevents duplicating monthly bills if 
+    // resent, while keeping separate months distinct.
+    if (amount && emailDate) {
+      const date = new Date(emailDate);
+      const startDate = new Date(date);
+      startDate.setDate(date.getDate() - 7);
+      
+      const endDate = new Date(date);
+      endDate.setDate(date.getDate() + 7);
+
+      const record = await BillingRecord.findOne({
+        userId,
+        vendorId,
+        amount,
+        $or: [
+          { transactionDate: { $gte: startDate, $lte: endDate } },
+          { billingDate: { $gte: startDate, $lte: endDate } }
+        ]
+      });
+
+      if (record) {
+         console.log(`  🔗 Fallback match (duplicate): ${vendorId} — Amount + Date proximity match`);
+         return record;
+      }
+    }
+
+    // No identifiers to match — this is always a new record
+    return null;
   }
 }
 

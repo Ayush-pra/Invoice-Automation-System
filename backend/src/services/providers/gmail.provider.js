@@ -56,7 +56,7 @@ class GmailProvider extends BaseInvoiceProvider {
   async fetchInvoices(integration, options = {}) {
     const {
       vendors = [],
-      existingMessageIds = new Set(),
+      checkExists = async () => new Set(),
       scanDurationDays = 90,
     } = options;
 
@@ -94,8 +94,11 @@ class GmailProvider extends BaseInvoiceProvider {
       const messageIds = await this._listMessages(query);
       vendorStats.emailsFound = messageIds.length;
 
+      // Check which message IDs already exist in the database for this batch
+      const existingInBatch = await checkExists(messageIds);
+
       for (const messageId of messageIds) {
-        if (existingMessageIds.has(messageId) || processedInThisRun.has(messageId)) {
+        if (existingInBatch.has(messageId) || processedInThisRun.has(messageId)) {
           vendorStats.ignored++;
           continue;
         }

@@ -98,14 +98,21 @@ class InvoiceService {
               };
 
               try {
-                await groupingService.processDocument(
-                  documentData,
-                  { _id: vendor._id, name: vendor.name },
-                  extractedData
-                );
+              // Process grouping first to determine if it's a duplicate
+              const groupingResult = await groupingService.processDocument(
+                documentData,
+                { _id: vendor._id, name: vendor.name },
+                extractedData
+              );
+              
+              if (groupingResult && groupingResult.isDuplicate) {
+                vendorSkipped++;
+                skipped++;
+              } else {
                 await BillingDocument.create(documentData);
                 vendorImported++;
                 imported++;
+              }
               } catch (err) {
                 if (err.code === 11000) {
                   vendorSkipped++;
@@ -168,46 +175,26 @@ class InvoiceService {
       if (!gmailIntegration) {
         errors.push({ error: 'Gmail is not connected. Skipping email queue.' });
       } else {
-        const existingDocuments = await BillingDocument.find(
-          { userId, sourceProvider: 'gmail', gmailMessageId: { $ne: null } },
-          { gmailMessageId: 1, attachmentId: 1 }
-        ).lean();
-
-        const existingMessageIds = new Set(existingDocuments.map((doc) => doc.gmailMessageId));
-        const existingKeys = new Set(existingDocuments.map((doc) => `${doc.gmailMessageId}:${doc.attachmentId || 'no-attachment'}`));
-
         const gmailProvider = getProvider('gmail');
         await gmailProvider.connect(gmailIntegration);
 
         const { invoices: invoiceDataList, stats } = await gmailProvider.fetchInvoices(gmailIntegration, {
           vendors: emailQueue,
           scanDurationDays: userConfig.scanDurationDays,
-          existingMessageIds,
+          checkExists: async (messageIds) => {
+            const existing = await BillingDocument.find(
+              { userId, sourceProvider: 'gmail', gmailMessageId: { $in: messageIds } },
+              { gmailMessageId: 1 }
+            ).lean();
+            return new Set(existing.map((doc) => doc.gmailMessageId));
+          },
         });
 
         // Add to main stats
         vendorStatsList.push(...stats);
 
         for (const item of invoiceDataList) {
-          const attachId = item.attachments && item.attachments.length > 0 ? item.attachments[0].attachmentId : 'no-attachment';
-          const key = `${item.messageId}:${attachId}`;
-          if (existingKeys.has(key)) {
-            skipped++;
-            continue;
-          }
-
           try {
-            let uploadResult = null;
-            if (item.attachments && item.attachments.length > 0) {
-              uploadResult = await storage.uploadFile(item.attachments[0].data, {
-                userId: userId.toString(),
-                vendorName: item.vendorName,
-                fileName: item.attachments[0].fileName,
-              });
-            }
-
-            const pdfUrl = uploadResult ? uploadResult.url : null;
-
             const documentData = {
               userId,
               vendorId: item.vendorId,
@@ -219,8 +206,6 @@ class InvoiceService {
               emailFrom: item.emailFrom,
               emailDate: item.emailDate,
               attachmentId: item.attachments && item.attachments.length > 0 ? item.attachments[0].attachmentId : null,
-              pdfUrl,
-              pdfPublicId: uploadResult ? uploadResult.publicId : null,
               fileName: item.attachments && item.attachments.length > 0 ? item.attachments[0].fileName : null,
               invoiceLink: item.invoiceLink,
               status: 'imported',
@@ -238,18 +223,45 @@ class InvoiceService {
               membershipName: item.membershipName,
               paymentMethod: item.paymentMethod,
               invoiceLink: item.invoiceLink,
-              pdfUrl,
             };
 
-            await groupingService.processDocument(
+            // Process grouping first to determine if it's a duplicate
+            const groupingResult = await groupingService.processDocument(
               documentData,
               { _id: item.vendorId, name: item.vendorName },
               extractedData
             );
-            await BillingDocument.create(documentData);
 
+            // If it's a duplicate by identifier, skip document creation and PDF upload
+            if (groupingResult && groupingResult.isDuplicate) {
+              skipped++;
+              continue;
+            }
+
+            // It's a new record, upload PDF if available
+            let uploadResult = null;
+            if (item.attachments && item.attachments.length > 0) {
+              uploadResult = await storage.uploadFile(item.attachments[0].data, {
+                userId: userId.toString(),
+                vendorName: item.vendorName,
+                fileName: item.attachments[0].fileName,
+              });
+            }
+
+            const pdfUrl = uploadResult ? uploadResult.url : null;
+            documentData.pdfUrl = pdfUrl;
+            documentData.pdfPublicId = uploadResult ? uploadResult.publicId : null;
+
+            // Also update the BillingRecord with the PDF URL if we just created it
+            if (pdfUrl && documentData.billingRecordId) {
+               await BillingRecord.updateOne(
+                 { _id: documentData.billingRecordId },
+                 { $set: { pdfUrl: pdfUrl } }
+               );
+            }
+
+            await BillingDocument.create(documentData);
             imported++;
-            existingKeys.add(key);
           } catch (error) {
             if (error.code === 11000) {
               skipped++;
